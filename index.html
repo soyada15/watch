@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>WatchAI</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{
+  width:100%;height:100%;overflow:hidden;
+  font-family:-apple-system,Helvetica,Arial,sans-serif;
+  font-size:18px;line-height:1.4;
+  background:#000;color:#e0e0e0;
+  -webkit-tap-highlight-color:transparent;-webkit-text-size-adjust:100%;
+}
+::-webkit-scrollbar{width:4px}
+::-webkit-scrollbar-track{background:#111}
+::-webkit-scrollbar-thumb{background:#333;border-radius:2px}
+
+.view{
+  display:none;
+  position:absolute;top:0;left:0;
+  width:100%;height:100%;
+  flex-direction:column;
+  overflow:hidden;
+}
+.view.active{display:flex}
+
+.topbar{
+  flex-shrink:0;
+  display:flex;align-items:center;justify-content:space-between;
+  padding:6px 8px;
+  background:#0d0d0d;
+  border-bottom:2px solid #1a1a1a;
+  min-height:52px;gap:6px;
+}
+.topbar-title{
+  flex:1;
+  font-size:16px;font-weight:700;
+  color:#00e5ff;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.topbar-btn{
+  flex-shrink:0;
+  min-width:48px;min-height:48px;
+  display:flex;align-items:center;justify-content:center;
+  background:#1a1a1a;color:#00e5ff;
+  border:2px solid #00e5ff;border-radius:8px;
+  font-size:20px;font-weight:700;
+  cursor:pointer;padding:0 10px;
+}
+.topbar-btn:active{background:#00e5ff;color:#000}
+
+.scroll-body{
+  flex:1;overflow-y:auto;overflow-x:hidden;
+  -webkit-overflow-scrolling:touch;
+  padding:8px;
+}
+
+.big-btn{
+  display:block;width:100%;
+  min-height:56px;
+  padding:12px 16px;
+  margin:8px 0;
+  font-size:17px;font-weight:700;
+  text-align:center;
+  border:none;border-radius:10px;
+  cursor:pointer;
+  color:#000;background:#00e5ff;
+}
+.big-btn:active{opacity:0.7}
+.big-btn.danger{background:#ff1744;color:#fff}
+.big-btn.secondary{background:#1a1a1a;color:#00e5ff;border:2px solid #00e5ff}
+
+.thread-item{
+  display:flex;align-items:center;
+  min-height:58px;
+  padding:10px 8px;margin:6px 0;
+  background:#111;border-radius:10px;
+  border-left:4px solid #00e5ff;
+  cursor:pointer;gap:8px;
+}
+.thread-item:active{background:#1a1a1a}
+.thread-item-title{
+  flex:1;font-size:17px;font-weight:600;color:#e0e0e0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.thread-item-del{
+  flex-shrink:0;
+  width:44px;height:44px;
+  display:flex;align-items:center;justify-content:center;
+  background:#1a1a1a;color:#ff1744;
+  border:2px solid #ff1744;border-radius:8px;
+  font-size:18px;font-weight:700;cursor:pointer;
+}
+.thread-item-del:active{background:#ff1744;color:#fff}
+
+.form-group{margin:10px 0}
+.form-label{
+  display:block;
+  font-size:14px;font-weight:700;
+  color:#00e5ff;margin-bottom:4px;
+  text-transform:uppercase;letter-spacing:1px;
+}
+.form-input,.form-select,.form-textarea{
+  display:block;width:100%;
+  min-height:50px;
+  padding:12px;
+  font-size:17px;
+  background:#111;color:#e0e0e0;
+  border:2px solid #222;border-radius:8px;
+  outline:none;
+}
+.form-input:focus,.form-select:focus,.form-textarea:focus{
+  border-color:#00e5ff;
+}
+.form-textarea{min-height:100px;resize:vertical}
+.form-select{-webkit-appearance:menulist}
+
+.msg-list{padding-bottom:4px}
+.msg-bubble{
+  max-width:92%;
+  padding:10px 12px;margin:6px 0;
+  border-radius:12px;
+  font-size:17px;
+  word-wrap:break-word;
+  white-space:pre-wrap;
+  line-height:1.45;
+}
+.msg-user{
+  background:#003c4f;color:#e0ffff;
+  margin-left:auto;
+  border-bottom-right-radius:4px;
+}
+.msg-ai{
+  background:#1a1a1a;color:#c8ffc8;
+  margin-right:auto;
+  border-bottom-left-radius:4px;border-left:3px solid #00ff88;
+}
+.msg-ai.streaming{border-left-color:#ffea00}
+
+.chat-input-bar{
+  flex-shrink:0;
+  display:flex;align-items:flex-end;
+  gap:6px;padding:6px 8px;
+  background:#0d0d0d;
+  border-top:2px solid #1a1a1a;
+}
+.chat-input-bar textarea{
+  flex:1;
+  min-height:48px;max-height:100px;
+  padding:10px;
+  font-size:17px;
+  background:#111;color:#e0e0e0;
+  border:2px solid #222;border-radius:8px;
+  resize:none;outline:none;
+}
+.chat-input-bar textarea:focus{border-color:#00e5ff}
+.chat-send-btn{
+  flex-shrink:0;
+  width:56px;min-height:48px;
+  background:#00e5ff;color:#000;
+  border:none;border-radius:8px;
+  font-size:22px;font-weight:700;
+  cursor:pointer;
+}
+.chat-send-btn:active{opacity:0.7}
+.chat-send-btn:disabled{opacity:0.3}
+
+.empty-hint{
+  text-align:center;
+  color:#555;font-size:15px;
+  padding:30px 10px;
+}
+</style>
+</head>
+<body>
+
+<!-- VIEW 1: THREAD LIST -->
+<div id="viewThreads" class="view active">
+  <div class="topbar">
+    <span class="topbar-title">⚡ WatchAI</span>
+    <button class="topbar-btn" id="btnGoSettings" title="Settings">⚙️</button>
+  </div>
+  <div class="scroll-body">
+    <button class="big-btn" id="btnNewThread">＋ 新建对话</button>
+    <div id="threadList"></div>
+    <div id="threadEmpty" class="empty-hint">暂无对话，点击上方按钮创建</div>
+  </div>
+</div>
+
+<!-- VIEW 2: GLOBAL SETTINGS -->
+<div id="viewSettings" class="view">
+  <d
