@@ -191,4 +191,618 @@ html,body{
 
 <!-- VIEW 2: GLOBAL SETTINGS -->
 <div id="viewSettings" class="view">
-  <d
+  <div class="topbar">
+    <button class="topbar-btn" id="btnSettingsBack">←</button>
+    <span class="topbar-title">全局设置</span>
+  </div>
+  <div class="scroll-body">
+    <div class="form-group">
+      <label class="form-label">API URL（/v1 结尾）</label>
+      <input class="form-input" id="inputEndpoint" placeholder="https://api.example.com/v1" autocomplete="off">
+    </div>
+    <div class="form-group">
+      <label class="form-label">API Key</label>
+      <input class="form-input" id="inputApiKey" type="password" placeholder="sk-..." autocomplete="off">
+    </div>
+    <button class="big-btn secondary" id="btnFetchModels">🔄 拉取模型 (Fetch Models)</button>
+    <div class="form-group">
+      <label class="form-label">选择模型</label>
+      <select class="form-select" id="selectModel">
+        <option value="">— 请先拉取模型 —</option>
+      </select>
+    </div>
+    <button class="big-btn" id="btnSaveSettings">💾 保存并返回首页</button>
+  </div>
+</div>
+
+<!-- VIEW 3: CHAT -->
+<div id="viewChat" class="view">
+  <div class="topbar">
+    <button class="topbar-btn" id="btnChatBack">←</button>
+    <span class="topbar-title" id="chatTitle">对话</span>
+    <button class="topbar-btn" id="btnChatPromptSettings">⚙️</button>
+  </div>
+  <div class="scroll-body" id="chatScrollBody">
+    <div class="msg-list" id="msgList"></div>
+  </div>
+  <div class="chat-input-bar">
+    <textarea id="chatInput" rows="1" placeholder="输入消息..."></textarea>
+    <button class="chat-send-btn" id="btnSend">▶</button>
+  </div>
+</div>
+
+<!-- VIEW 4: SESSION PROMPT SETTINGS -->
+<div id="viewSessionSettings" class="view">
+  <div class="topbar">
+    <button class="topbar-btn" id="btnSessionSettingsBack">←</button>
+    <span class="topbar-title">会话设定</span>
+  </div>
+  <div class="scroll-body">
+    <div class="form-group">
+      <label class="form-label">会话标题</label>
+      <input class="form-input" id="inputSessionTitle" placeholder="给对话起个名字" autocomplete="off">
+    </div>
+    <div class="form-group">
+      <label class="form-label">System Prompt（系统身份设定）</label>
+      <textarea class="form-textarea" id="inputSystemPrompt" rows="5" placeholder="你是一个..."></textarea>
+    </div>
+    <button class="big-btn" id="btnSaveSessionSettings">💾 保存返回对话</button>
+  </div>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+var STORE_KEY = "watchai_data";
+var appData = null;
+var currentThreadId = null;
+var activeXHR = null;
+
+var $ = function(id){ return document.getElementById(id); };
+var views = {
+  threads: $("viewThreads"),
+  settings: $("viewSettings"),
+  chat: $("viewChat"),
+  sessionSettings: $("viewSessionSettings")
+};
+
+//────────── PERSISTENCE ──────────
+function loadData(){
+  try {
+    var raw = localStorage.getItem(STORE_KEY);
+    if(raw) appData = JSON.parse(raw);
+  } catch(e){}
+  if(!appData || typeof appData !== "object"){
+    appData = { settings:{ endpoint:"", apikey:"", model:"" }, threads:[] };
+  }
+  if(!appData.settings) appData.settings = { endpoint:"", apikey:"", model:"" };
+  if(!Array.isArray(appData.threads)) appData.threads = [];
+}
+
+function saveData(){
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(appData)); } catch(e){}
+}
+
+// ────────── VIEW ROUTING ──────────
+function showView(name){
+  for(var k in views){
+    if(views[k]) views[k].classList.toggle("active", k === name);
+  }
+}
+
+// ────────── THREAD HELPERS ──────────
+function genId(){
+  return "t" + Date.now() + "_" + Math.random().toString(36).slice(2,7);
+}
+
+function getThread(id){
+  for(var i = 0; i < appData.threads.length; i++){
+    if(appData.threads[i].id === id) return appData.threads[i];
+  }
+  return null;
+}
+
+function deleteThread(id){
+  appData.threads = appData.threads.filter(function(t){ return t.id !== id; });
+  saveData();
+}
+
+// ────────── THREAD LIST RENDER ──────────
+function renderThreadList(){
+  var container = $("threadList");
+  var empty = $("threadEmpty");
+  container.innerHTML = "";
+  if(appData.threads.length === 0){
+    empty.style.display = "block";
+    return;
+  }
+  empty.style.display = "none";
+  for(var i = appData.threads.length - 1; i >= 0; i--){
+    var t = appData.threads[i];
+    var div = document.createElement("div");
+    div.className = "thread-item";
+    div.setAttribute("data-id", t.id);
+
+    var titleSpan = document.createElement("span");
+    titleSpan.className = "thread-item-title";
+    titleSpan.textContent = t.title || "未命名对话";
+
+    var delBtn = document.createElement("button");
+    delBtn.className = "thread-item-del";
+    delBtn.textContent = "✕";
+    delBtn.setAttribute("data-id", t.id);
+
+    div.appendChild(titleSpan);
+    div.appendChild(delBtn);
+    container.appendChild(div);
+  }
+}
+
+// ────────── CHAT RENDER ──────────
+function renderChat(){
+  var thread = getThread(currentThreadId);
+  if(!thread) return;
+  $("chatTitle").textContent = thread.title || "对话";
+  var list = $("msgList");
+  list.innerHTML = "";
+  if(!thread.messages) thread.messages = [];
+  for(var i = 0; i < thread.messages.length; i++){
+    var m = thread.messages[i];
+    if(m.role === "system") continue;
+    appendBubble(m.role === "user" ? "user" : "ai", m.content, false);
+  }
+  scrollChatBottom();
+}
+
+function appendBubble(type, text, isStreaming){
+  var list = $("msgList");
+  var div = document.createElement("div");
+  div.className = "msg-bubble " + (type === "user" ? "msg-user" : "msg-ai");
+  if(isStreaming) div.classList.add("streaming");
+  div.textContent = text || "";
+  list.appendChild(div);
+  return div;
+}
+
+function scrollChatBottom(){
+  var sb = $("chatScrollBody");
+  sb.scrollTop = sb.scrollHeight;
+}
+
+// ────────── ABORT ACTIVE XHR ──────────
+function abortActiveXHR(){
+  if(activeXHR){
+    try { activeXHR.abort(); } catch(e){}
+    activeXHR = null;
+  }
+}
+
+// ───────────────────────────────────────────────
+//XHR-BASED FETCH MODELS(GET, non-streaming)
+// ───────────────────────────────────────────────
+function fetchModels(){
+  var endpoint = $("inputEndpoint").value.trim().replace(/\/+$/, "");
+  var apikey= $("inputApiKey").value.trim();
+  if(!endpoint || !apikey){
+    alert("请先填写 API URL 和 API Key");
+    return;
+  }
+
+  var btn = $("btnFetchModels");
+  btn.textContent = "⏳ 拉取中...";
+  btn.disabled = true;
+
+  var xhr = new XMLHttpRequest();
+  xhr.open("GET", endpoint + "/models", true);
+  xhr.setRequestHeader("Authorization", "Bearer " + apikey);
+  xhr.setRequestHeader("Accept", "application/json");
+  xhr.timeout = 30000;
+
+  xhr.onload = function(){
+    btn.textContent = "🔄 拉取模型 (Fetch Models)";
+    btn.disabled = false;
+
+    if(xhr.status < 200 || xhr.status >= 300){
+      alert("拉取失败: HTTP " + xhr.status);
+      return;
+    }
+
+    var json;
+    try { json = JSON.parse(xhr.responseText); } catch(e){
+      alert("解析返回数据失败");
+      return;
+    }
+
+    var models = json.data || json || [];
+    if(!Array.isArray(models)) models = [];
+    models.sort(function(a, b){
+      var na = (a.id || String(a)).toLowerCase();
+      var nb = (b.id || String(b)).toLowerCase();
+      return na < nb ? -1 : na > nb ? 1 : 0;
+    });
+
+    var sel = $("selectModel");
+    sel.innerHTML = "";
+
+    if(models.length === 0){
+      sel.innerHTML = '<option value="">— 未找到模型 —</option>';
+    } else {
+      for(var i = 0; i < models.length; i++){
+        var mid = models[i].id || String(models[i]);
+        var opt = document.createElement("option");
+        opt.value = mid;
+        opt.textContent = mid;
+        sel.appendChild(opt);
+      }if(appData.settings.model) sel.value = appData.settings.model;
+      if(!sel.value && models.length > 0) sel.value = models[0].id || String(models[0]);
+    }};
+
+  xhr.onerror = function(){
+    btn.textContent = "🔄 拉取模型 (Fetch Models)";
+    btn.disabled = false;alert("网络错误，无法连接服务器");
+  };
+
+  xhr.ontimeout = function(){
+    btn.textContent = "🔄 拉取模型 (Fetch Models)";
+    btn.disabled = false;
+    alert("请求超时");
+  };
+
+  xhr.send(null);
+}
+
+// ───────────────────────────────────────────────────────────
+//  XHR-BASED STREAMING CHAT  (POST, readyState===3 parsing)
+// ───────────────────────────────────────────────────────────
+function sendMessage(){
+  var thread = getThread(currentThreadId);
+  if(!thread) return;
+
+  var input = $("chatInput");
+  var text = input.value.trim();
+  if(!text) return;
+  input.value = "";
+
+  if(!thread.messages) thread.messages = [];
+
+  // Push user message
+  thread.messages.push({ role: "user", content: text });
+  saveData();
+  appendBubble("user", text, false);
+  scrollChatBottom();
+
+  // Validate settings
+  var s = appData.settings;
+  if(!s.endpoint || !s.apikey || !s.model){
+    appendBubble("ai", "⚠️ 请先在全局设置中配置 API", false);
+    scrollChatBottom();
+    return;
+  }
+
+  // Build messages payload
+  var apiMsgs = [];
+  if(thread.systemPrompt){
+    apiMsgs.push({ role: "system", content: thread.systemPrompt });
+  }
+  for(var i = 0; i < thread.messages.length; i++){
+    var mm = thread.messages[i];
+    if(mm.role === "system") continue;
+    apiMsgs.push({ role: mm.role, content: mm.content });
+  }
+
+  var endpoint = s.endpoint.replace(/\/+$/, "");
+  var url = endpoint + "/chat/completions";
+  var bodyStr = JSON.stringify({
+    model: s.model,
+    messages: apiMsgs,
+    stream: true
+  });
+
+  // Disable send button
+  var sendBtn = $("btnSend");
+  sendBtn.disabled = true;
+
+  // Create streaming AI bubble
+  var aiBubble = appendBubble("ai", "", true);
+  var fullText = "";
+  var parsedLen = 0;  // how many chars of responseText we already parsed
+
+  // Abort any prior request
+  abortActiveXHR();
+
+  var xhr = new XMLHttpRequest();
+  activeXHR = xhr;
+
+  xhr.open("POST", url, true);
+  xhr.setRequestHeader("Content-Type", "application/json");
+  xhr.setRequestHeader("Authorization", "Bearer " + s.apikey);
+  xhr.setRequestHeader("Accept", "text/event-stream");
+  xhr.timeout = 120000;
+
+  //── Core streaming parser using readyState 3 ──
+  //
+  //While the response is still arriving (readyState === 3),
+  //  xhr.responseText contains ALL bytes received so far.
+  //  We keep a cursor `parsedLen` to only process the new chunk
+  //  each time the handler fires, then split by newlines and
+  //  look for SSE "data:..." lines.
+  //
+  //  A small `sseBuffer` accumulates partial lines across calls
+  //  (a line may be split in the middle by the network chunk boundary).
+
+  var sseBuffer = "";    // leftover incomplete line from previous chunk
+  var streamDone = false;
+
+  function processChunk(){
+    if(streamDone) return;
+
+    var raw;
+    try { raw = xhr.responseText; } catch(e){ return; }
+    if(raw.length <= parsedLen) return;
+
+    // Grab only the NEW part since last parse
+    var newData = raw.substring(parsedLen);
+    parsedLen = raw.length;
+
+    sseBuffer += newData;
+
+    // Split into lines
+    var lines = sseBuffer.split("\n");
+    // Last element may be incomplete — keep it for next round
+    sseBuffer = lines.pop() || "";
+
+    for(var li = 0; li < lines.length; li++){
+      var line = lines[li];
+      // Remove possible \r
+      if(line.charCodeAt(line.length - 1) === 13) line = line.slice(0, -1);
+      line = line.replace(/^\s+/, "");
+
+      if(!line) continue;
+
+      if(line === "data: [DONE]"){
+        streamDone = true;
+        finishStream();
+        return;
+      }
+
+      if(line.indexOf("data:") === 0){
+        var payload = line.charAt(5) === " " ? line.substring(6) : line.substring(5);
+        payload = payload.replace(/^\s+/, "");
+        if(!payload || payload === "[DONE]"){
+          streamDone = true;
+          finishStream();
+          return;
+        }
+        try {
+          var obj = JSON.parse(payload);
+          if(obj.choices && obj.choices.length > 0){
+            var delta = obj.choices[0].delta;
+            if(delta && typeof delta.content === "string"){
+              fullText += delta.content;
+              aiBubble.textContent = fullText;
+              scrollChatBottom();
+            }
+            // Check finish_reason
+            if(obj.choices[0].finish_reason){
+              streamDone = true;
+              finishStream();
+              return;
+            }
+          }
+        } catch(e){
+          // JSON parse error on partial data — ignore
+        }
+      }
+    }
+  }
+
+  function finishStream(){
+    streamDone = true;
+    aiBubble.classList.remove("streaming");
+    if(fullText){
+      thread.messages.push({ role: "assistant", content: fullText });
+      saveData();
+    }
+    sendBtn.disabled = false;
+    if(activeXHR === xhr) activeXHR = null;
+  }
+
+  function handleError(msg){
+    streamDone = true;
+    aiBubble.classList.remove("streaming");
+    if(fullText){
+      // Keep partial response
+      aiBubble.textContent = fullText;
+      thread.messages.push({ role: "assistant", content: fullText });} else {
+      aiBubble.textContent = msg;
+    }
+    saveData();
+    sendBtn.disabled = false;
+    if(activeXHR === xhr) activeXHR = null;
+  }
+
+  xhr.onreadystatechange = function(){
+    // readyState 3 = LOADING (partial data available)
+    if(xhr.readyState === 3){
+      processChunk();
+    }
+    // readyState 4 = DONE
+    if(xhr.readyState === 4){
+      // Process any remaining data in the buffer
+      processChunk();
+
+      if(!streamDone){
+        if(xhr.status >= 200 && xhr.status < 300){
+          // Stream ended naturally without [DONE] — still valid
+          finishStream();
+        } else if(xhr.status === 0){
+          // Aborted or network failure
+          handleError("⚠️ 请求被中断或网络错误");
+        } else {
+          // HTTP error — try to extract error message
+          var errMsg = "⚠️ HTTP " + xhr.status;
+          try {
+            var errObj = JSON.parse(xhr.responseText);
+            if(errObj.error && errObj.error.message){
+              errMsg += ": " + errObj.error.message;
+            }
+          } catch(e){}
+          handleError(errMsg);
+        }
+      }
+    }
+  };
+
+  xhr.onerror = function(){
+    handleError("⚠️ 网络错误，无法连接服务器");
+  };
+
+  xhr.ontimeout = function(){
+    handleError("⚠️ 请求超时");
+  };
+
+  xhr.send(bodyStr);
+}
+
+// ────────── EVENT BINDINGS & INIT ──────────
+function init(){
+  loadData();
+  renderThreadList();
+
+  // ── View1: Thread List ──
+  $("btnGoSettings").addEventListener("click", function(){
+    $("inputEndpoint").value = appData.settings.endpoint || "";
+    $("inputApiKey").value = appData.settings.apikey || "";
+    var sel = $("selectModel");
+    if(appData.settings.model){
+      // Ensure the option exists or add a placeholder
+      var found = false;
+      for(var i = 0; i < sel.options.length; i++){
+        if(sel.options[i].value === appData.settings.model){
+          found = true; break;
+        }
+      }
+      if(!found){
+        var opt = document.createElement("option");
+        opt.value = appData.settings.model;
+        opt.textContent = appData.settings.model;
+        sel.appendChild(opt);
+      }
+      sel.value = appData.settings.model;
+    }
+    showView("settings");
+  });
+
+  $("btnNewThread").addEventListener("click", function(){
+    var t = {
+      id: genId(),
+      title: "新对话",
+      systemPrompt: "",
+      messages: []
+    };
+    appData.threads.push(t);
+    saveData();
+    currentThreadId = t.id;
+    renderChat();
+    showView("chat");
+  });
+
+  $("threadList").addEventListener("click", function(e){
+    var delBtn = e.target;
+    while(delBtn && !delBtn.classList.contains("thread-item-del") && delBtn !== this){
+      delBtn = delBtn.parentNode;
+    }
+    if(delBtn && delBtn.classList.contains("thread-item-del")){
+      e.stopPropagation();
+      var tid = delBtn.getAttribute("data-id");
+      if(confirm("确定删除此对话？")){
+        deleteThread(tid);
+        renderThreadList();
+      }
+      return;
+    }
+    var item = e.target;
+    while(item && !item.classList.contains("thread-item") && item !== this){
+      item = item.parentNode;
+    }
+    if(item && item.classList.contains("thread-item")){
+      var id = item.getAttribute("data-id");
+      currentThreadId = id;
+      renderChat();
+      showView("chat");
+    }
+  });
+
+  // ── View2: Settings ──
+  $("btnSettingsBack").addEventListener("click", function(){
+    renderThreadList();
+    showView("threads");
+  });
+
+  $("btnFetchModels").addEventListener("click", fetchModels);
+
+  $("btnSaveSettings").addEventListener("click", function(){
+    appData.settings.endpoint = $("inputEndpoint").value.trim().replace(/\/+$/, "");
+    appData.settings.apikey = $("inputApiKey").value.trim();
+    appData.settings.model = $("selectModel").value;
+    saveData();
+    renderThreadList();
+    showView("threads");
+  });
+
+  // ── View3: Chat ──
+  $("btnChatBack").addEventListener("click", function(){
+    abortActiveXHR();
+    $("btnSend").disabled = false;
+    renderThreadList();
+    showView("threads");
+  });
+
+  $("btnSend").addEventListener("click", sendMessage);
+
+  $("chatInput").addEventListener("keydown", function(e){
+    if(e.key === "Enter" && !e.shiftKey){
+      e.preventDefault();
+      sendMessage();
+    }
+  });
+
+  $("btnChatPromptSettings").addEventListener("click", function(){
+    var thread = getThread(currentThreadId);
+    if(!thread) return;
+    $("inputSessionTitle").value = thread.title || "";
+    $("inputSystemPrompt").value = thread.systemPrompt || "";
+    showView("sessionSettings");
+  });
+
+  // ── View4: Session Prompt Settings ──
+  $("btnSessionSettingsBack").addEventListener("click", function(){
+    renderChat();
+    showView("chat");
+  });
+
+  $("btnSaveSessionSettings").addEventListener("click", function(){
+    var thread = getThread(currentThreadId);
+    if(!thread) return;
+    thread.title = $("inputSessionTitle").value.trim() || "未命名对话";
+    thread.systemPrompt = $("inputSystemPrompt").value.trim();
+    saveData();
+    renderChat();
+    showView("chat");
+  });
+
+  showView("threads");
+}
+
+// ── BOOT ──
+if(document.readyState === "loading"){
+  document.addEventListener("DOMContentLoaded", init);
+} else {
+  init();
+}
+
+})();
+</script>
+</body>
+</html>
